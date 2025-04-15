@@ -310,7 +310,8 @@ async def generate_ai_response(prompt):
             try:
                 headers = {"Content-Type": "application/json"}
                 data = {
-                    "model": "llama3.1:8b",
+                    "model": "llama3.1",
+                    # "model": "llama3.1:8b",
                     "prompt": prompt_text,
                     "system": (
                         "Ты - профессиональный нутрициолог, помошник Татьяны Николаевны, ароматерапевт, знаешь всё о биологически активных добавках, с глубокими знаниями в области питания и здоровья. "
