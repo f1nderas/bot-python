@@ -15,6 +15,9 @@ import os
 from pathlib import Path
 import uuid
 
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 # Инициализация RAG и RAGTrainer в начале файла
 rag = RAGHandler()
 rag_trainer = RAGTrainer()
@@ -114,9 +117,8 @@ class AdminStates(StatesGroup):
 @dp.message(SubscriptionStates.waiting_for_payment)
 async def process_subscription_choice(message: types.Message, state: FSMContext):
     sub_options = {
-        "1 месяц - 299 руб": {"type": "1_month", "price": 299, "days": 30, "desc": "1 месяц"},
-        "3 месяца - 799 руб": {"type": "3_month", "price": 799, "days": 90, "desc": "3 месяца"},
-        "12 месяцев - 2499 руб": {"type": "12_month", "price": 2499, "days": 365, "desc": "12 месяцев"}
+        "7 дней (7 вопрос) - 299 руб": {"type": "7_days", "price": 299, "days": 7, "desc": "7 дней"},
+        "1 месяц (30 вопросов) - 799 руб": {"type": "1_month", "price": 799, "days": 30, "desc": "1 месяц"}
     }
 
     if message.text == "Назад":
@@ -339,6 +341,33 @@ async def generate_ai_response(prompt):
     except Exception as e:
         logger.error(f"Ошибка при генерации ответа с RAG: {e}")
         return "Извините, я не смог найти информацию по вашему запросу."
+
+async def show_loading_indicator(message: types.Message, delay=1.0):
+    """
+    Показывает индикатор загрузки с меняющимися эмодзи и возвращает ID сообщения.
+    """
+    emoji_states = ["⏳", "🔄", "⚙️", "⏲️", "🌀"]
+    loading_message = await message.answer(f"{emoji_states[0]} Обработка...")
+    counter = 0
+
+    async def update_loading():
+        nonlocal counter
+        while True:
+            await asyncio.sleep(delay)
+            counter = (counter + 1) % len(emoji_states)
+            try:
+                await bot.edit_message_text(
+                    chat_id=loading_message.chat.id,
+                    message_id=loading_message.message_id,
+                    text=f"{emoji_states[counter]} Обработка..."
+                )
+            except Exception as e:
+                logger.warning(f"Ошибка обновления индикатора загрузки: {e}")
+                break
+
+    task = asyncio.create_task(update_loading())
+    return loading_message, task
+
 
 # ========== Обработчики команд ==========
 
@@ -664,13 +693,18 @@ async def cmd_check_knowledge(message: Message):
 
 @dp.message(lambda message: message.photo or message.video)
 async def handle_media(message: types.Message, state: FSMContext):
+    logger.info(f"Обработка медиа от пользователя {message.from_user.id}")
+
+    # Проверка на администратора
     if message.from_user.id == ADMIN_ID:
         await message.answer("Вы администратор. Вы можете только редактировать ответы бота.")
         return
 
+    # Получение данных пользователя
     user_data = await state.get_data()
     expert_mode = user_data.get('expert_mode', False)
 
+    # Определение типа медиа
     if message.photo:
         media_type = "фото"
         photo = message.photo[-1]
@@ -686,17 +720,44 @@ async def handle_media(message: types.Message, state: FSMContext):
 
     caption = message.caption if message.caption else "без описания"
 
+    # Формирование промпта для RAG
     prompt = (f"Пользователь отправил {media_type} ({media_info}) с описанием: '{caption}'. "
               f"Как нутрициолог, дай рекомендации по этому контенту. "
               f"Если это фото еды, проанализируй ее состав и пользу. "
               f"Если это видео, дай общие рекомендации по его содержанию. "
               f"Если контент не относится к питанию, вежливо сообщи об этом.")
 
-    bot_text = await generate_ai_response(prompt)
-    if not bot_text:
-        await message.answer("Произошла ошибка при обработке вашего медиа. Пожалуйста, попробуйте позже.")
-        return
+    # Показываем индикатор загрузки
+    loading_message, loading_task = await show_loading_indicator(message)
 
+    try:
+        # Генерация ответа
+        bot_text = await generate_ai_response(prompt)
+        if not bot_text:
+            await bot.edit_message_text(
+                chat_id=loading_message.chat.id,
+                message_id=loading_message.message_id,
+                text="❌ Произошла ошибка при обработке вашего медиа. Пожалуйста, попробуйте позже."
+            )
+            return
+    except Exception as e:
+        logger.error(f"Ошибка в generate_ai_response: {e}")
+        await bot.edit_message_text(
+            chat_id=loading_message.chat.id,
+            message_id=loading_message.message_id,
+            text="❌ Произошла ошибка при обработке вашего медиа. Пожалуйста, попробуйте позже."
+        )
+        return
+    finally:
+        # Останавливаем анимацию загрузки
+        logger.info("Остановка индикатора загрузки")
+        loading_task.cancel()
+        try:
+            await loading_task
+        except asyncio.CancelledError:
+            pass
+
+    # Сохранение запроса в pending_requests
     pending_requests[message.from_user.id] = {
         "question": f"{media_type} ({caption})",
         "answer": bot_text,
@@ -706,6 +767,7 @@ async def handle_media(message: types.Message, state: FSMContext):
         "message_id": message.message_id
     }
 
+    # Сохранение разговора в БД
     save_conversation(
         user_id=message.from_user.id,
         question=f"{media_type} ({caption})",
@@ -713,14 +775,15 @@ async def handle_media(message: types.Message, state: FSMContext):
         is_approved=not expert_mode
     )
 
+    # Обработка ответа в обычном режиме
     if not expert_mode:
         return_keyboard = ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="Вернуться к выбору")],
-            ],
+            keyboard=[[KeyboardButton(text="Вернуться к выбору")]],
             resize_keyboard=True
         )
 
+        # Удаляем индикатор и отправляем медиа с ответом
+        await bot.delete_message(chat_id=loading_message.chat.id, message_id=loading_message.message_id)
         await send_media_with_caption(
             chat_id=message.chat.id,
             file_id=file_id,
@@ -733,6 +796,8 @@ async def handle_media(message: types.Message, state: FSMContext):
         update_learning_data(f"{media_type} ({caption})", bot_text)
         return
 
+    # Обработка в экспертном режиме
+    await bot.delete_message(chat_id=loading_message.chat.id, message_id=loading_message.message_id)
     if is_photo:
         await bot.send_photo(
             chat_id=ADMIN_ID,
@@ -762,6 +827,7 @@ async def handle_media(message: types.Message, state: FSMContext):
 
     await message.answer("Ваш запрос отправлен эксперту на проверку. Мы уведомим вас, когда эксперт проверит ответ.")
     await state.set_state(AdminEditing.waiting_for_edit)
+
 
 @dp.message(lambda message: message.text == "Обучение" and message.from_user.id == ADMIN_ID)
 async def handle_training_button(message: Message):
@@ -857,8 +923,12 @@ async def handle_training_file_upload(message: Message, state: FSMContext):
 
     await state.clear()
 
+
 @dp.message()
 async def handle_text_message(message: Message, state: FSMContext):
+    logger.info(f"Обработка текстового сообщения от пользователя {message.from_user.id}")
+
+    # Проверка на администратора
     if message.from_user.id == ADMIN_ID:
         if message.text in ["Обучение", "Статистика", "Статистика RAG", "Статистика обучения", "Назад"]:
             return
@@ -873,18 +943,46 @@ async def handle_text_message(message: Message, state: FSMContext):
             await message.answer("Вы администратор. Вы можете только редактировать ответы бота.")
             return
 
+    # Игнорирование команд меню
     if message.text in ["Начать диалог", "Оплатить подписку", "Написать боту", "Написать боту (с экспертом)",
                         "Вернуться к выбору"]:
         return
 
+    # Получение данных пользователя
     user_data = await state.get_data()
     expert_mode = user_data.get('expert_mode', False)
 
-    bot_text = await generate_ai_response(message.text)
-    if not bot_text:
-        await message.answer("Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже.")
-        return
+    # Показываем индикатор загрузки
+    loading_message, loading_task = await show_loading_indicator(message)
 
+    try:
+        # Генерация ответа
+        bot_text = await generate_ai_response(message.text)
+        if not bot_text:
+            await bot.edit_message_text(
+                chat_id=loading_message.chat.id,
+                message_id=loading_message.message_id,
+                text="❌ Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже."
+            )
+            return
+    except Exception as e:
+        logger.error(f"Ошибка в generate_ai_response: {e}")
+        await bot.edit_message_text(
+            chat_id=loading_message.chat.id,
+            message_id=loading_message.message_id,
+            text="❌ Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже."
+        )
+        return
+    finally:
+        # Останавливаем анимацию загрузки
+        logger.info("Остановка индикатора загрузки")
+        loading_task.cancel()
+        try:
+            await loading_task
+        except asyncio.CancelledError:
+            pass
+
+    # Сохранение запроса в pending_requests
     pending_requests[message.from_user.id] = {
         "question": message.text,
         "answer": bot_text,
@@ -892,6 +990,7 @@ async def handle_text_message(message: Message, state: FSMContext):
         "message_id": message.message_id
     }
 
+    # Сохранение разговора в БД
     save_conversation(
         user_id=message.from_user.id,
         question=message.text,
@@ -899,14 +998,15 @@ async def handle_text_message(message: Message, state: FSMContext):
         is_approved=not expert_mode
     )
 
+    # Обработка ответа в обычном режиме
     if not expert_mode:
         return_keyboard = ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="Вернуться к выбору")],
-            ],
+            keyboard=[[KeyboardButton(text="Вернуться к выбору")]],
             resize_keyboard=True
         )
 
+        # Удаляем индикатор и отправляем ответ
+        await bot.delete_message(chat_id=loading_message.chat.id, message_id=loading_message.message_id)
         for i in range(0, len(bot_text), 4096):
             part = bot_text[i:i + 4096]
             await bot.send_message(
@@ -919,6 +1019,7 @@ async def handle_text_message(message: Message, state: FSMContext):
         update_learning_data(message.text, bot_text)
         return
 
+    # Обработка в экспертном режиме
     await state.update_data(
         original_message=message.text,
         original_user=message.from_user.id,
@@ -927,6 +1028,8 @@ async def handle_text_message(message: Message, state: FSMContext):
         original_bot_response=bot_text
     )
 
+    # Удаляем индикатор и отправляем запрос эксперту
+    await bot.delete_message(chat_id=loading_message.chat.id, message_id=loading_message.message_id)
     await bot.send_message(
         chat_id=ADMIN_ID,
         text=f"📨 Новый запрос от пользователя:\n\n"
@@ -937,13 +1040,13 @@ async def handle_text_message(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="Отправить как есть", callback_data=f"approve_{message.from_user.id}")],
             [InlineKeyboardButton(text="Редактировать", callback_data=f"edit_options_{message.from_user.id}")],
             [InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{message.from_user.id}")],
-                [InlineKeyboardButton(text="Индивидуальная консультация", callback_data=f"consultation_{message.from_user.id}")]
+            [InlineKeyboardButton(text="Индивидуальная консультация",
+                                  callback_data=f"consultation_{message.from_user.id}")]
         ])
     )
 
     await message.answer("Ваш запрос отправлен эксперту на проверку. Мы уведомим вас, когда эксперт проверит ответ.")
     await state.set_state(AdminEditing.waiting_for_edit)
-
 # ========== Обработчики колбэков ==========
 @dp.callback_query(lambda c: c.data.startswith("sub_"))
 async def process_subscription(callback: types.CallbackQuery, state: FSMContext):
