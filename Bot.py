@@ -13,6 +13,7 @@ from rag_handler import RAGHandler
 from rag_trainer import RAGTrainer
 import os
 from pathlib import Path
+import uuid
 
 # Инициализация RAG и RAGTrainer в начале файла
 rag = RAGHandler()
@@ -20,9 +21,9 @@ rag_trainer = RAGTrainer()
 
 GENERAL_QUESTIONS = {
     "как дела": "🌟 Всё отлично, спасибо! Готов помочь с вопросами о питании и здоровье! 😊",
-    "кто ты": "🤖 Я бот-нутрициолог, созданный, чтобы помогать с вопросами о здоровом питании, образе жизни и БАДах. Задай мне любой вопрос! 📝",
+    "кто ты": "🤖 Я бот-нутрициолог, ароматерапевт, созданный, чтобы помогать с вопросами о здоровом питании, образе жизни, эфирных маслах БАДах. Задай мне любой вопрос! 📝",
     "что ты умеешь": "🌟 Я умею отвечать на вопросы о питании, здоровье, БАДах, анализировать фото еды и давать полезные советы. Просто спроси! 😊",
-    "кто тебя создал": "🚀 Меня создала команда xAI, чтобы я помогал людям заботиться о своём здоровье! 😄"
+    "кто тебя создал": "🚀 Меня создала команда AromaInc, чтобы я помогал людям заботиться о своём здоровье! 😄"
 }
 
 # Ключевые слова для общих вопросов
@@ -33,7 +34,7 @@ GENERAL_KEYWORDS = [
 
 # Конфигурация
 TOKEN = '7705327980:AAHxGu09YYsvDsrjq_Ff-bGg-l4bb7x3wRU'
-ADMIN_ID = 5440647148
+ADMIN_ID = 753655653
 DATABASE_NAME = 'nutrition_bot.db'
 LOCAL_LLM_URL = "http://localhost:11434/api/generate"
 
@@ -101,7 +102,7 @@ pending_requests = {}
 class AdminEditing(StatesGroup):
     waiting_for_edit = State()
     waiting_for_ai_refinement = State()
-    waiting_for_new_query = State()  # Новое состояние для нового запроса
+    waiting_for_new_query = State()
 
 class SubscriptionStates(StatesGroup):
     waiting_for_payment = State()
@@ -310,16 +311,15 @@ async def generate_ai_response(prompt):
             try:
                 headers = {"Content-Type": "application/json"}
                 data = {
-                    "model": "llama3.1",
-                    # "model": "llama3.1:8b",
+                    "model": "llama3.1:8b",
                     "prompt": prompt_text,
                     "system": (
-                        "Ты - профессиональный нутрициолог, помошник Татьяны Николаевны, ароматерапевт, знаешь всё о биологически активных добавках, с глубокими знаниями в области питания и здоровья. "
+                        "Ты - профессиональный нутрициолог,ароматерапевт помощник Татьяны Николаевны, знаешь всё о биологически активных добавках и эфирных маслах, с глубокими знаниями в области питания и здоровья, биологически активных добавок и эфирных масел. "
                         "Отвечай ТОЛЬКО на русском языке. "
-                        "Если запрос связан с питанием, здоровьем или БАДами, анализируй контекст и давай развернутые, полезные ответы. "
-                        "Если запрос не относится к питанию или здоровью, дай краткий, вежливый ответ без рекомендаций по БАДам. "
+                        "Если запрос связан с питанием, здоровьем, эфирными масласми или БАДами, анализируй контекст и давай развернутые, полезные ответы. "
+                        "Если запрос не относится к питанию или здоровью, дай краткий, вежливый ответ без рекомендаций по БАДам и эфирным маслам. "
                         "Оформляй ответы красиво с эмодзи (🌟, 📝, ✅) и заголовками только для тематических вопросов. "
-                        "Если в запросе или ответе упоминаются БАДы (биологически активные добавки), всегда указывай их ПОЛНОЕ настоящее название как оно есть, "
+                        "Если в запросе или ответе упоминаются БАДы (биологически активные добавки) или ЭМ (эфирные масла), всегда указывай их ПОЛНОЕ настоящее название как оно есть, "
                         "избегая сокращений или общих фраз вроде 'витаминный комплекс' без конкретики."
                     ),
                     "stream": False,
@@ -750,12 +750,13 @@ async def handle_media(message: types.Message, state: FSMContext):
         chat_id=ADMIN_ID,
         text=f"📨 Новый запрос от пользователя:\n\n"
              f"👤 User ID: {message.from_user.id}\n"
-             f"📝 Вопрос: {message.text}\n\n"
+             f"📝 Вопрос: {caption}\n\n"
              f"🤖 Ответ Llama 3:\n{bot_text}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Отправить как есть", callback_data=f"approve_{message.from_user.id}")],
             [InlineKeyboardButton(text="Редактировать", callback_data=f"edit_options_{message.from_user.id}")],
-            [InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{message.from_user.id}")]
+            [InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{message.from_user.id}")],
+            [InlineKeyboardButton(text="Индивидуальная консультация", callback_data=f"consultation_{message.from_user.id}")]
         ])
     )
 
@@ -935,7 +936,8 @@ async def handle_text_message(message: Message, state: FSMContext):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Отправить как есть", callback_data=f"approve_{message.from_user.id}")],
             [InlineKeyboardButton(text="Редактировать", callback_data=f"edit_options_{message.from_user.id}")],
-            [InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{message.from_user.id}")]
+            [InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{message.from_user.id}")],
+                [InlineKeyboardButton(text="Индивидуальная консультация", callback_data=f"consultation_{message.from_user.id}")]
         ])
     )
 
@@ -1122,7 +1124,8 @@ async def back_to_main(callback: types.CallbackQuery):
             [
                 InlineKeyboardButton(text="Отправить как есть", callback_data=f"approve_{user_id}"),
                 InlineKeyboardButton(text="Редактировать", callback_data=f"edit_options_{user_id}"),
-                InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{user_id}")
+                InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{user_id}"),
+                InlineKeyboardButton(text="Индивидуальная консультация", callback_data=f"consultation_{user_id}")
             ]
         ])
     )
@@ -1204,12 +1207,85 @@ async def cancel_ai_refinement(callback: types.CallbackQuery, state: FSMContext)
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Отправить как есть", callback_data=f"approve_{user_id}")],
             [InlineKeyboardButton(text="Редактировать", callback_data=f"edit_options_{user_id}")],
-            [InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{user_id}")]
+            [InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{user_id}")],
+            [InlineKeyboardButton(text="Индивидуальная консультация", callback_data=f"consultation_{user_id}")]
         ])
     )
 
     await callback.answer("Редакция через нейросеть отменена.")
     await state.set_state(AdminEditing.waiting_for_edit)
+
+@dp.callback_query(lambda c: c.data.startswith("consultation_"))
+async def handle_consultation(callback: types.CallbackQuery):
+    try:
+        user_id = int(callback.data.split("_")[1])
+        request_data = pending_requests.get(user_id)
+
+        if not request_data:
+            await callback.answer("Ошибка: данные не найдены.")
+            return
+
+        chat_id = request_data["chat_id"]
+        message_id = request_data["message_id"]
+
+        # Текст сообщения для пользователя
+        consultation_text = (
+            "🌟 Для ответа на ваш вопрос требуется индивидуальная консультация!\n\n"
+            "📞 Свяжитесь с нашим специалистом (@TaNikBob) для получения персонализированных рекомендаций."
+        )
+
+        # Отправка сообщения пользователю
+        return_keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Вернуться к выбору")],
+            ],
+            resize_keyboard=True
+        )
+
+        if "file_id" in request_data:
+            await send_media_with_caption(
+                chat_id=chat_id,
+                file_id=request_data["file_id"],
+                caption=consultation_text,
+                is_photo=request_data.get("is_photo", False),
+                reply_to_message_id=message_id,
+                reply_markup=return_keyboard
+            )
+        else:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=consultation_text,
+                reply_to_message_id=message_id,
+                reply_markup=return_keyboard
+            )
+
+        # Сохранение в базе данных
+        save_conversation(
+            user_id=user_id,
+            question=request_data.get("question", ""),
+            bot_answer=request_data.get("answer", ""),
+            expert_answer=consultation_text,
+            is_approved=True,
+            is_edited=True
+        )
+
+        # Обновление базы знаний
+        update_learning_data(request_data.get("question", ""), consultation_text)
+
+        # Уведомление администратора
+        await callback.message.edit_text(
+            text=callback.message.text + "\n\n✅ Пользователю отправлено сообщение об индивидуальной консультации",
+            reply_markup=None
+        )
+        await callback.answer("Сообщение об индивидуальной консультации отправлено.")
+
+        # Удаление запроса из pending_requests
+        if user_id in pending_requests:
+            del pending_requests[user_id]
+
+    except Exception as e:
+        logger.error(f"Ошибка при обработке запроса на консультацию: {e}")
+        await callback.answer("Ошибка при отправке сообщения.")
 
 @dp.callback_query(lambda c: c.data.startswith("new_query_"))
 async def start_new_query(callback: types.CallbackQuery, state: FSMContext):
@@ -1260,7 +1336,8 @@ async def cancel_new_query(callback: types.CallbackQuery, state: FSMContext):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Отправить как есть", callback_data=f"approve_{user_id}")],
             [InlineKeyboardButton(text="Редактировать", callback_data=f"edit_options_{user_id}")],
-            [InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{user_id}")]
+            [InlineKeyboardButton(text="Новый запрос (нейросеть)", callback_data=f"new_query_{user_id}")],
+            [InlineKeyboardButton(text="Индивидуальная консультация", callback_data=f"consultation_{user_id}")]
         ])
     )
 
