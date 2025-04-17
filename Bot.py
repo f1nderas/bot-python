@@ -35,7 +35,7 @@ GENERAL_KEYWORDS = [
 # Конфигурация
 TOKEN = '7705327980:AAHxGu09YYsvDsrjq_Ff-bGg-l4bb7x3wRU'
 ADMIN_ID = 753655653
-DATABASE_NAME = 'nutrition_bot2.db'
+DATABASE_NAME = 'nutrition_bot.db'
 LOCAL_LLM_URL = "http://localhost:11434/api/generate"
 
 # Инициализация базы данных
